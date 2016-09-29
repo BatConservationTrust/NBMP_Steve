@@ -1,0 +1,205 @@
+
+R version 3.3.1 (2016-06-21) -- "Bug in Your Hair"
+Copyright (C) 2016 The R Foundation for Statistical Computing
+Platform: i386-w64-mingw32/i386 (32-bit)
+
+R is free software and comes with ABSOLUTELY NO WARRANTY.
+You are welcome to redistribute it under certain conditions.
+Type 'license()' or 'licence()' for distribution details.
+
+  Natural language support but running in an English locale
+
+R is a collaborative project with many contributors.
+Type 'contributors()' for more information and
+'citation()' on how to cite R or R packages in publications.
+
+Type 'demo()' for some demos, 'help()' for on-line help, or
+'help.start()' for an HTML browser interface to help.
+Type 'q()' to quit R.
+
+[Previously saved workspace restored]
+
+> # 19/9/16 GAM regional comparison for daubs
+> timestamp()
+##------ Thu Sep 29 13:57:20 2016 ------##
+> options(width=180)
+> 
+> #load functions and data
+> library(gam)
+Loading required package: splines
+Loading required package: foreach
+Loaded gam 1.12
+
+> 
+> rm(list=ls())  #ensure memory clear
+> source("C:/data/nbmp2015/R/rcode/func_fgindex.R")
+> load("hib.rda")  #much faster than using xlsx file below
+> #need to restart R before re-running this line or get java error
+> #hib=read.xlsx("C:/data/nbmp2015/r/hib/hib2015.xlsx",sheetIndex=1)
+>                  
+> #********************************************************************************
+> #set all variables etc
+> #set below to UK values and overwrite for Wales, Scotland etc if needed
+> #********************************************************************************
+> nr=400   #n randomisations
+> nrchk=100 #check point where abandon if clearly not sig
+> baseyear=1999
+> splinedf=6  #16/11/13 go to 6 as default for all hibs (7 is correct for 90-13, 5 for 97 on)
+> firstyear=1998
+> minyears=2  #min number of years of valid data to include site
+> #set tcountries to those to be included
+> tcountries=c("England","Wales","Scotland")
+> monthstouse=c("Dec","Jan","Feb","Mar")
+> set.seed(157235) #so can reproduce exactly if required
+> nmon=50  #monitoring
+> tsp="daub"
+> #call count yvar to make easier to change species.  Use eval to reduce potential
+> #for error since only type species name once above
+> eval(parse(text=paste("hib$yvar=hib$",tsp)))
+> #give full model as character string (converted to full formula later once all vars defined)
+> charmodel="yvar~site+year+month"
+> #********************************************************************************
+> #end of definition section
+> #********************************************************************************
+> 
+> #with(hib,fullmodel=as.formula(charmodel))
+> length(hib$yvar); sum(hib$yvar,na.rm=TRUE) #for checking correct subset
+[1] 17045
+[1] 29012
+> 
+> 
+> #********************************************************************************
+> #remove countries not required
+> #********************************************************************************
+> goodcountry=hib$country %in% tcountries
+> if (sum(goodcountry)==0) {
++   rm(hib) #so can't miss warning!
++   twarn=paste0("tcountry set to ",tcountry,". No data in subset")
++   warning(twarn)  }
+> hib=hib[goodcountry,]  #subset to required country
+> table(hib$country,useNA="ifany")
+
+Scotland    Wales  England 
+     593     5957    10453 
+> length(hib$yvar); sum(hib$yvar,na.rm=TRUE) #for checking correct subset
+[1] 17003
+[1] 29010
+> 
+> #********************************************************************************
+> #build up subset for analysis
+> #********************************************************************************
+> goodyear=as.numeric(as.character(hib$year))>=firstyear
+> goodcount=!is.na(hib$yvar)
+> goodmonth=hib$month %in% monthstouse
+> #note na.rm is needed or gives missing sum if any count missing
+> sitewith=tapply(hib$yvar,hib$site,sum,na.rm=TRUE)>0
+> goodsite=sitewith[hib$site]
+> tapply(goodmonth, hib$month, sum)
+ Nov  Dec  Jan  Feb  Mar 
+   0 1597 5959 6428 1439 
+> 
+> hib=hib[goodyear&goodcount&goodmonth&goodsite,]
+> length(hib$yvar); sum(hib$yvar,na.rm=TRUE) #for checking correct subset
+[1] 7711
+[1] 25273
+> 
+> #********************************************************************************
+> #further reduce subset, taking just sites with at least minyears of data
+> #********************************************************************************
+> tcount=function(x) {length(unique(x))}
+> nyears=tapply(hib$year,hib$site,tcount)
+> table(nyears)
+nyears
+ 1  2  3  4  5  6  7  8  9 10 11 12 13 14 15 16 17 18 
+18 22 20 16 13 13 21 23 20 23 31 18 14 24 22 28 30 46 
+> hib=hib[(nyears[hib$site]>=minyears),]
+> length(hib$yvar); sum(hib$yvar,na.rm=TRUE) #for checking correct subset
+[1] 7684
+[1] 25191
+> 
+> #********************************************************************************
+> #no covariates model 
+> #********************************************************************************
+> with(hib,fgdata(yvar~site+year,distribution = "poisson"))
+Response variable: yvar 
+ Binomial totals:   not applicable 
+ Sites: site 
+ Years: year 
+ Number of rows: 7684 
+> #any unused levels will cause fault, so drop them
+> hib$country=droplevels(hib$country)
+> reg=fgregion(print=c("summary"),region=hib$country,splinedf=splinedf,
++              nmonitor =nmon,nrand=nr,ncheck=nrchk)
+********** loop: 50   29 Sep 2016 14:16:59 BST  **********
+********** loop: 100   29 Sep 2016 14:36:58 BST  **********
+
+
+**** GAM Regional Analysis ****
+
+ Title:             GAM regions  29 Sep 2016 13:57:21 BST 
+ Response variable: yvar 
+ Binomial totals:   not applicable 
+ Distribution:      poisson 
+ Model:    x        yvar ~ site + year 
+ Spline d.f.:       6  (supplied) 
+ GAM method:        full 
+ N initial rand:    400 
+ Check after rand:  100 
+ Total sites:       384 
+ Prog version:      v1.0 29/9/16 fgregion added 
+  
+      region
+       Scotland Wales England
+  1998       12    61     192
+  1999       14    56     219
+  2000       19    59     224
+  2001       14    18     243
+  2002       15    75     288
+  2003       11    81     316
+  2004       16    73     319
+  2005       21    39     358
+  2006       21    75     371
+  2007       19    75     355
+  2008       19    85     386
+  2009       29    87     397
+  2010       15    87     389
+  2011       29    95     377
+  2012       23    88     407
+  2013       23    95     387
+  2014       29    97     365
+  2015       23    89     404
+
+**************** Deviances for observed data ****************
+
+common dev:      10542.49 
+common df:       7294
+separate dev:    10509.87 
+separate df:     7281.999
+difference dev:    32.61978 
+difference df:     12.00059
+
+**************** Deviance test for interation ****************
+
+Asymptotic P-value:  0.001
+Randomisation P-value:  1 
+    quants devquants
+1%    0.01  41.70757
+5%    0.05  52.90934
+10%   0.10  68.60605
+25%   0.25 100.07343
+50%   0.50 133.64016
+75%   0.75 182.63226
+90%   0.90 258.17344
+95%   0.95 293.26039
+99%   0.99 401.22790
+> 
+> #********************************************************************************
+> #May want to add code to compare separate curves for each region, with bootstrapping
+> #to highlight differences
+> #********************************************************************************
+> 
+> 
+> 
+> proc.time()
+   user  system elapsed 
+2329.06   47.32 2403.42 

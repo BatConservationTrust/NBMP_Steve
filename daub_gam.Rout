@@ -1,0 +1,451 @@
+
+R version 3.3.1 (2016-06-21) -- "Bug in Your Hair"
+Copyright (C) 2016 The R Foundation for Statistical Computing
+Platform: i386-w64-mingw32/i386 (32-bit)
+
+R is free software and comes with ABSOLUTELY NO WARRANTY.
+You are welcome to redistribute it under certain conditions.
+Type 'license()' or 'licence()' for distribution details.
+
+  Natural language support but running in an English locale
+
+R is a collaborative project with many contributors.
+Type 'contributors()' for more information and
+'citation()' on how to cite R or R packages in publications.
+
+Type 'demo()' for some demos, 'help()' for on-line help, or
+'help.start()' for an HTML browser interface to help.
+Type 'q()' to quit R.
+
+[Previously saved workspace restored]
+
+> # 7/8/16 GAM for daubs
+> options(width=180)
+> 
+> #load functions and data
+> library(gam)
+Loading required package: splines
+Loading required package: foreach
+Loaded gam 1.12
+
+> library(xlsx)
+Loading required package: rJava
+Loading required package: xlsxjars
+> rm(list=ls())  #ensure memory clear
+> source("C:/data/nbmp2015/R/rcode/func_fgindex.R")
+> load("hib.rda")  #much faster than using xlsx file below
+> #need to restart R before re-running this line or get java error
+> #hib=read.xlsx("C:/data/nbmp2015/r/hib/hib2015.xlsx",sheetIndex=1)
+>                  
+> #********************************************************************************
+> #set all variables etc
+> #set below to UK values and overwrite for Wales, Scotland etc if needed
+> #********************************************************************************
+> nboot1=10
+> nboot3=400   #n bootstraps for analysis used for trend
+> baseyear=1999
+> splinedf=6  #16/11/13 go to 6 as default for all hibs (7 is correct for 90-13, 5 for 97 on)
+> firstyear=1990
+> minyears=2  #min number of years of valid data to include site
+> tcountry='GB' #set to UK, England, Wales, Scotland
+> monthstouse=c("Dec","Jan","Feb","Mar")
+> set.seed(157235) #so can reproduce exactly if required
+> set.seed(45843) #crashes with value above
+> nmon=50  #monitoring
+> tsp="daub"
+> #call count yvar to make easier to change species.  Use eval to reduce potential
+> #for error since only type species name once above
+> eval(parse(text=paste("hib$yvar=hib$",tsp)))
+> #give full model as character string (converted to full formula later once all vars defined)
+> charmodel="yvar~site+year+month"
+> #********************************************************************************
+> #end of definition section
+> #********************************************************************************
+> 
+> #filename for xlsx output
+> xlsfile=paste0("C:/data/nbmp2015/R/composite/xlsx/",substring(tcountry,1,3),
++                "hib_",tsp,".xlsx")
+> xlsfile
+[1] "C:/data/nbmp2015/R/composite/xlsx/GBhib_daub.xlsx"
+> #with(hib,fullmodel=as.formula(charmodel))
+> length(hib$yvar); sum(hib$yvar,na.rm=TRUE) #for checking correct subset
+[1] 17045
+[1] 29012
+> 
+> #********************************************************************************
+> #country information, then take appropriate subset
+> #might be worth putting all this in spreadsheet in future so don't need individual
+> #command file for each species
+> #********************************************************************************
+> if (tcountry=='Scotland'){
++   firstyear=2005 #can go back to 1998 but v few so s.e.s unlikely to be sensible
++   baseyear=2011}
+> if (tcountry=='Wales'){
++   firstyear=1990}
+> if (tcountry=='England') {
++  firstyear=1993}
+> #set tcountries variable - same for wales, scot, england, but list for GB, UK
+> tcountries=tcountry
+> nboot2=nboot3  #analysis 2 (covariates, no weights) used for Eng, Wales & Scotland
+> if (tcountry=='UK'){
++   tcountries=c("England","Wales","Scotland","NI")
++   nboot2=nboot1}
+> if (tcountry=='GB'){
++   tcountries=c("England","Wales","Scotland")
++   nboot2=nboot1}
+> goodcountry=hib$country %in% tcountries
+> #following ensures consistent with Genstat which included missing countries in GB
+> if (tcountry=="GB") goodcountry=goodcountry | is.na(hib$country)
+> if (sum(goodcountry)==0) {
++   rm(hib) #so can't miss warning!
++   twarn=paste0("tcountry set to ",tcountry,". No data in subset")
++   warning(twarn)  }
+> hib=hib[goodcountry,]  #subset to required country
+> table(hib$country,useNA="ifany")
+
+Scotland    Wales  England     <NA> 
+     593     5957    10453       42 
+> length(hib$yvar); sum(hib$yvar,na.rm=TRUE) #for checking correct subset
+[1] 17045
+[1] 29012
+> 
+> #********************************************************************************
+> #build up subset for analysis
+> #********************************************************************************
+> goodyear=as.numeric(as.character(hib$year))>=firstyear
+> goodcount=!is.na(hib$yvar)
+> goodmonth=hib$month %in% monthstouse
+> #note na.rm is needed or gives missing sum if any count missing
+> sitewith=tapply(hib$yvar,hib$site,sum,na.rm=TRUE)>0
+> goodsite=sitewith[hib$site]
+> tapply(goodmonth, hib$month, sum)
+ Nov  Dec  Jan  Feb  Mar 
+   0 1602 5964 6431 1442 
+> 
+> hib=hib[goodyear&goodcount&goodmonth&goodsite,]
+> length(hib$yvar); sum(hib$yvar,na.rm=TRUE) #for checking correct subset
+[1] 8875
+[1] 27863
+> 
+> #********************************************************************************
+> #further reduce subset, taking just sites with at least minyears of data
+> #********************************************************************************
+> tcount=function(x) {length(unique(x))}
+> nyears=tapply(hib$year,hib$site,tcount)
+> table(nyears)
+nyears
+ 1  2  3  4  5  6  7  8  9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 
+16 30 20 16 11 15 18 23 19 16 28 15 12 16 17 12 21 21 37  7  3  9 14  8  7  6 
+> hib=hib[(nyears[hib$site]>=minyears),]
+> length(hib$yvar); sum(hib$yvar,na.rm=TRUE) #for checking correct subset
+[1] 8852
+[1] 27785
+> 
+> #********************************************************************************
+> #no covariates model 
+> #********************************************************************************
+> with(hib,fgdata(yvar~site+year,distribution = "poisson"))
+Response variable: yvar 
+ Binomial totals:   not applicable 
+ Sites: site 
+ Years: year 
+ Number of rows: 8852 
+> analysis1=fgindex(splinedf=splinedf,nboot=nboot1,nmonitor=nmon,baseyear=baseyear,plot=TRUE,
++         title="No covariates")
+
+
+**** GAM Bootstrapping Results ****
+
+ Title:             No covariates 
+ Response variable: yvar 
+ Binomial totals:   not applicable 
+ Distribution:      poisson 
+ Model:    x        yvar ~ site + year 
+ Spline d.f.:       6  (supplied) 
+ GAM method:        full 
+ Confidence level:  95 
+ N boot:            10 
+ Total sites:       401 
+ Prog version:       v0.7 12/09/2016 droplevels() in fgdata 
+ Time 100 loops:    61.74748 mins 
+
+
+**** GAM Smoothed & Unsmoothed Index ****
+
+   Year Nobs Nsite Smoothed  se_sm low_sm  up_sm Unsmoothed se_unsm
+1  1990  112    72    81.00 13.917  53.17 108.84      76.20      NA
+2  1991  108    72    82.30 11.531  59.24 105.36      95.26      NA
+3  1992  114    79    83.43  9.600  64.23 102.63      77.58      NA
+4  1993  132    67    84.60  8.203  68.19 101.00      89.96      NA
+5  1994  145    88    85.97  7.110  71.75 100.19      85.02      NA
+6  1995  126    82    87.87  6.102  75.67 100.08      71.24      NA
+7  1996  140    87    90.48  5.012  80.46 100.51      98.44      NA
+8  1997  279   170    93.49  3.653  86.19 100.80      92.08      NA
+9  1998  271   157    96.74  1.951  92.84 100.64     101.74      NA
+10 1999  290   162   100.00  0.000 100.00 100.00     100.00      NA
+11 2000  302   183   103.33  1.772  99.79 106.88      99.13      NA
+12 2001  275   161   106.62  3.236 100.15 113.09     111.34      NA
+13 2002  378   213   109.20  4.338 100.52 117.87     111.16      NA
+14 2003  408   236   110.76  5.134 100.49 121.03     115.98      NA
+15 2004  408   234   111.49  5.645 100.20 122.77     110.57      NA
+16 2005  419   225   112.24  5.933 100.37 124.10     107.56      NA
+17 2006  468   252   113.40  5.981 101.44 125.36     117.71      NA
+18 2007  449   249   114.16  5.969 102.22 126.09     117.78      NA
+19 2008  490   264   114.01  6.354 101.31 126.72     118.45      NA
+20 2009  513   273   113.22  6.736  99.74 126.69     113.84      NA
+21 2010  491   265   112.76  6.829  99.10 126.42     112.90      NA
+22 2011  501   275   113.60  6.921  99.76 127.44     109.24      NA
+23 2012  518   279   116.16  7.517 101.13 131.19     127.86      NA
+24 2013  505   275   120.23  8.556 103.12 137.34     119.84      NA
+25 2014  493   267   127.89 10.878 106.14 149.65     104.25      NA
+26 2015  517   282   140.81 15.164 110.48 171.14     158.82      NA
+
+
+**** Differences and change points ****
+
+   Year  diff low_dif up_dif sig_dif   chg low_chg up_chg sig_chg
+1  1990    NA      NA     NA    <NA>    NA      NA     NA    <NA>
+2  1991  1.29   -4.93   5.72      NS -0.16   -0.90   0.60      NS
+3  1992  1.13   -4.49   5.72      NS  0.04   -1.26   1.39      NS
+4  1993  1.17   -3.17   5.15      NS  0.19   -1.15   1.61      NS
+5  1994  1.38   -1.73   4.30      NS  0.53   -0.82   1.83      NS
+6  1995  1.90   -0.83   4.37      NS  0.76   -0.51   2.00      NS
+7  1996  2.61   -0.07   4.66      NS  0.38   -0.76   1.87      NS
+8  1997  3.01    0.49   4.63     sig  0.25   -0.52   1.44      NS
+9  1998  3.25    0.52   5.36     sig -0.02   -1.00   1.07      NS
+10 1999  3.26    0.47   6.23     sig  0.09   -0.80   1.21      NS
+11 2000  3.33    1.05   6.48     sig  0.01   -1.60   1.04      NS
+12 2001  3.29    1.94   6.30     sig -0.75   -2.61   0.49      NS
+13 2002  2.58    0.75   5.16     sig -1.05   -2.95   0.03      NS
+14 2003  1.57   -0.47   3.52      NS -0.92   -2.47   0.27      NS
+15 2004  0.72   -1.94   2.08      NS  0.08   -0.92   1.06      NS
+16 2005  0.75   -2.22   2.07      NS  0.54   -0.95   3.03      NS
+17 2006  1.16   -0.99   2.93      NS -0.44   -1.80   2.30      NS
+18 2007  0.76   -1.01   4.72      NS -0.96   -1.70   1.18      NS
+19 2008 -0.14   -1.96   4.84      NS -0.73   -2.25   1.22      NS
+20 2009 -0.80   -1.83   3.20      NS  0.35   -2.10   1.60      NS
+21 2010 -0.46   -1.63   3.87      NS  1.35   -1.22   2.04      NS
+22 2011  0.84   -1.52   4.94      NS  1.80   -0.82   1.88      NS
+23 2012  2.56   -0.18   4.69      NS  1.26   -1.47   2.64      NS
+24 2013  4.07    1.03   5.26     sig  3.62    1.09   6.83     sig
+25 2014  7.66    2.86  10.76     sig  5.25    2.61   8.54     sig
+26 2015 12.92    5.49  19.31     sig    NA      NA     NA    <NA>
+
+*******************************************************
+
+> write.xlsx(analysis1,file=xlsfile,sheet='Analysis 1',row.names = FALSE)
+> 
+> #********************************************************************************
+> #With covariates model 
+> #********************************************************************************
+> with(hib,fgdata(as.formula(charmodel),distribution = "poisson"))
+Response variable: yvar 
+ Binomial totals:   not applicable 
+ Sites: site 
+ Years: year 
+ Number of rows: 8852 
+> analysis2=fgindex(splinedf=splinedf,nboot=nboot2,nmonitor=nmon,baseyear=baseyear,plot=TRUE,
++                   title="With covariates")
+
+
+**** GAM Bootstrapping Results ****
+
+ Title:             With covariates 
+ Response variable: yvar 
+ Binomial totals:   not applicable 
+ Distribution:      poisson 
+ Model:    x        yvar ~ site + year + month 
+ Spline d.f.:       6  (supplied) 
+ GAM method:        full 
+ Confidence level:  95 
+ N boot:            10 
+ Total sites:       401 
+ Prog version:       v0.7 12/09/2016 droplevels() in fgdata 
+ Time 100 loops:    62.91697 mins 
+
+
+**** GAM Smoothed & Unsmoothed Index ****
+
+   Year Nobs Nsite Smoothed  se_sm low_sm  up_sm Unsmoothed se_unsm
+1  1990  112    72    82.05 16.052  49.95 114.16      76.64      NA
+2  1991  108    72    83.30 13.497  56.31 110.30      95.73      NA
+3  1992  114    79    84.39 11.037  62.31 106.46      76.88      NA
+4  1993  132    67    85.49  8.873  67.74 103.23      92.14      NA
+5  1994  145    88    86.75  6.997  72.75 100.74      84.58      NA
+6  1995  126    82    88.50  5.475  77.56  99.45      71.06      NA
+7  1996  140    87    90.97  4.188  82.59  99.34      98.18      NA
+8  1997  279   170    93.83  2.907  88.01  99.64      91.79      NA
+9  1998  271   157    96.91  1.562  93.79 100.04     100.83      NA
+10 1999  290   162   100.00  0.000 100.00 100.00     100.00      NA
+11 2000  302   183   103.14  1.634  99.87 106.40      97.98      NA
+12 2001  275   161   106.26  3.167  99.93 112.60     109.85      NA
+13 2002  378   213   108.78  4.628  99.52 118.04     109.56      NA
+14 2003  408   236   110.39  6.414  97.56 123.22     114.97      NA
+15 2004  408   234   111.19  8.461  94.27 128.11     109.65      NA
+16 2005  419   225   112.00 10.684  90.64 133.37     106.64      NA
+17 2006  468   252   113.20 12.580  88.04 138.36     116.70      NA
+18 2007  449   249   113.97 13.324  87.32 140.62     116.93      NA
+19 2008  490   264   113.83 12.628  88.57 139.09     117.38      NA
+20 2009  513   273   113.06 10.882  91.29 134.82     112.68      NA
+21 2010  491   265   112.66  9.187  94.29 131.03     112.06      NA
+22 2011  501   275   113.56  8.482  96.60 130.53     108.02      NA
+23 2012  518   279   116.13  8.894  98.34 133.92     127.89      NA
+24 2013  505   275   120.06 10.305  99.45 140.67     118.65      NA
+25 2014  493   267   127.42 13.068 101.29 153.56     103.18      NA
+26 2015  517   282   139.91 17.655 104.60 175.22     156.48      NA
+
+
+**** Differences and change points ****
+
+   Year  diff low_dif up_dif sig_dif   chg low_chg up_chg sig_chg
+1  1990    NA      NA     NA    <NA>    NA      NA     NA    <NA>
+2  1991  1.25   -3.21   5.64      NS -0.17   -0.40   0.35      NS
+3  1992  1.08   -3.35   5.90      NS  0.02   -0.67   1.00      NS
+4  1993  1.10   -2.96   5.73      NS  0.14   -0.86   1.25      NS
+5  1994  1.26   -2.65   5.23      NS  0.51   -0.53   1.74      NS
+6  1995  1.76   -1.33   4.72      NS  0.76   -0.48   1.93      NS
+7  1996  2.46    0.23   4.51     sig  0.37   -0.38   1.36      NS
+8  1997  2.86    0.99   4.60     sig  0.24   -0.50   0.66      NS
+9  1998  3.09    1.20   5.17     sig -0.03   -0.90   0.65      NS
+10 1999  3.09    0.68   5.51     sig  0.05   -1.00   0.87      NS
+11 2000  3.14    0.46   5.51     sig  0.05   -1.25   1.11      NS
+12 2001  3.13    0.71   5.29     sig -0.64   -2.14   0.42      NS
+13 2002  2.52   -0.60   4.75      NS -0.94   -1.89  -0.42     sig
+14 2003  1.61   -2.12   3.93      NS -0.89   -1.59   0.81      NS
+15 2004  0.80   -2.40   3.51      NS  0.06   -0.11   2.36      NS
+16 2005  0.81   -2.26   4.15      NS  0.51   -1.31   2.31      NS
+17 2006  1.20   -1.43   5.63      NS -0.47   -2.61   1.29      NS
+18 2007  0.77   -1.51   3.87      NS -0.98   -5.33   0.16      NS
+19 2008 -0.14   -1.90   1.81      NS -0.70   -4.42   1.59      NS
+20 2009 -0.77   -5.39   2.96      NS  0.38   -1.02   1.83      NS
+21 2010 -0.40   -6.54   4.40      NS  1.35    0.46   2.60     sig
+22 2011  0.90   -5.68   5.33      NS  1.76   -0.70   3.08      NS
+23 2012  2.57   -3.12   5.13      NS  1.08   -1.48   3.52      NS
+24 2013  3.92   -1.07   6.67      NS  3.48   -0.68   5.00      NS
+25 2014  7.37    1.00  10.91     sig  5.12    1.00   6.20     sig
+26 2015 12.49    3.45  16.58     sig    NA      NA     NA    <NA>
+
+*******************************************************
+
+> write.xlsx(analysis2,file=xlsfile,sheet='Analysis 2',row.names = FALSE,append=TRUE)
+> 
+> #********************************************************************************
+> #Calculate waits and fit model With covariates & weighted 
+> #********************************************************************************
+> areas=read.xlsx("C:/data/nbmp2013/katepaper/areas for weighting.xlsx",sheetIndex=1,
++                 rowIndex = 7:12)
+> colabs=levels(hib$country)
+> areas=areas[areas[,1]%in% colabs,]
+> areas
+       NA.   sqkm sqkmex  diff
+1 Scotland  77898  47112 30786
+2    Wales  20689  19236  1453
+4  England 130362 125545  4817
+> #check order the same
+> if (mean(areas[1]==colabs)<1) rm(areas)
+> totobs=table(hib$country)
+> wt=areas$sqkmex/as.numeric(totobs)
+> data.frame(totobs,wt,areas$sqkmex)  #data.frame prints nicely in columns
+      Var1 Freq         wt areas.sqkmex
+1 Scotland  420 112.171429        47112
+2    Wales 1974   9.744681        19236
+3  England 6456  19.446252       125545
+> wts=wt[hib$country] #expand to one value per survey
+> 
+> analysis3=fgindex(splinedf=splinedf,nboot=nboot3,nmonitor=nmon,baseyear=baseyear,plot=TRUE,
++                   title="Weighted covariates",weight=wts)
+loop: 50   16 Sep 2016 14:09:10 BST 
+loop: 100   16 Sep 2016 14:39:08 BST 
+loop: 150   16 Sep 2016 15:07:35 BST 
+loop: 200   16 Sep 2016 15:35:12 BST 
+loop: 250   16 Sep 2016 16:04:30 BST 
+loop: 300   16 Sep 2016 16:34:08 BST 
+loop: 350   16 Sep 2016 17:03:27 BST 
+loop: 400   16 Sep 2016 17:33:09 BST 
+
+
+**** GAM Bootstrapping Results ****
+
+ Title:             Weighted covariates 
+ Response variable: yvar 
+ Binomial totals:   not applicable 
+ Distribution:      poisson 
+ Model:    x        yvar ~ site + year + month 
+ Spline d.f.:       6  (supplied) 
+ GAM method:        full 
+ Confidence level:  95 
+ N boot:            400 
+ Total sites:       401 
+ Prog version:       v0.7 12/09/2016 droplevels() in fgdata 
+ Time 100 loops:    0.9885298 hours 
+
+
+**** GAM Smoothed & Unsmoothed Index ****
+
+   Year Nobs Nsite Smoothed  se_sm low_sm  up_sm Unsmoothed se_unsm
+1  1990  112    72    78.71 14.874  47.03 107.57      70.13      NA
+2  1991  108    72    81.32 13.359  51.57 103.36      89.83      NA
+3  1992  114    79    83.69 11.792  56.71 103.89      81.69      NA
+4  1993  132    67    85.77 10.110  61.90 102.14      91.46      NA
+5  1994  145    88    87.61  8.304  68.59 101.19      86.15      NA
+6  1995  126    82    89.55  6.572  74.97 100.19      73.15      NA
+7  1996  140    87    91.84  4.966  80.55 100.24      98.01      NA
+8  1997  279   170    94.36  3.412  86.54 100.20      90.11      NA
+9  1998  271   157    97.13  1.790  93.21 100.38      97.60      NA
+10 1999  290   162   100.00  0.000 100.00 100.00     100.00      NA
+11 2000  302   183   102.88  1.661  99.67 106.31      97.35      NA
+12 2001  275   161   105.72  3.052  99.84 112.04     108.36      NA
+13 2002  378   213   108.05  4.254  99.72 116.78     105.59      NA
+14 2003  408   236   109.74  5.767  98.85 121.50     112.71      NA
+15 2004  408   234   110.71  7.516  97.42 125.74     108.05      NA
+16 2005  419   225   111.47  9.164  95.36 129.70     107.04      NA
+17 2006  468   252   112.20 10.276  93.50 132.90     113.88      NA
+18 2007  449   249   112.41 10.745  91.37 134.67     113.63      NA
+19 2008  490   264   112.00 10.722  91.79 134.20     114.10      NA
+20 2009  513   273   111.51 10.258  92.62 132.01     106.64      NA
+21 2010  491   265   112.05  9.679  94.76 132.10     110.09      NA
+22 2011  501   275   113.97  9.485  96.70 134.86     110.44      NA
+23 2012  518   279   117.09  9.938 100.00 140.19     125.37      NA
+24 2013  505   275   121.17 10.997 101.44 147.37     117.97      NA
+25 2014  493   267   128.18 13.324 104.51 156.66     107.66      NA
+26 2015  517   282   139.57 17.859 109.94 178.80     150.77      NA
+
+
+**** Differences and change points ****
+
+   Year  diff low_dif up_dif sig_dif   chg low_chg up_chg sig_chg
+1  1990    NA      NA     NA    <NA>    NA      NA     NA    <NA>
+2  1991  2.61   -2.94   6.32      NS -0.24   -1.08   0.69      NS
+3  1992  2.37   -3.07   6.53      NS -0.30   -1.86   0.98      NS
+4  1993  2.08   -3.15   6.68      NS -0.26   -1.98   1.13      NS
+5  1994  1.85   -2.60   7.05      NS  0.09   -1.31   1.61      NS
+6  1995  1.94   -1.75   6.64      NS  0.40   -1.36   1.91      NS
+7  1996  2.29   -0.77   6.62      NS  0.20   -1.31   1.46      NS
+8  1997  2.52   -0.18   6.42      NS  0.28   -0.79   1.33      NS
+9  1998  2.77   -0.08   6.54      NS  0.09   -1.09   1.36      NS
+10 1999  2.87   -0.38   6.79      NS  0.01   -1.27   1.28      NS
+11 2000  2.88   -0.33   6.31      NS -0.01   -1.73   1.20      NS
+12 2001  2.83    0.01   5.77     sig -0.54   -2.55   0.98      NS
+13 2002  2.33   -0.37   5.36      NS -0.64   -2.18   1.01      NS
+14 2003  1.69   -1.59   5.43      NS -0.78   -2.31   0.98      NS
+15 2004  0.97   -2.80   5.47      NS -0.19   -2.25   1.57      NS
+16 2005  0.75   -3.11   5.24      NS  0.05   -3.28   2.84      NS
+17 2006  0.73   -3.05   4.91      NS -0.56   -3.60   2.04      NS
+18 2007  0.22   -3.44   4.37      NS -0.69   -3.18   1.36      NS
+19 2008 -0.41   -4.00   3.72      NS -0.13   -2.76   2.23      NS
+20 2009 -0.49   -4.17   2.86      NS  1.10   -1.06   3.15      NS
+21 2010  0.54   -3.33   4.57      NS  1.43   -0.51   3.55      NS
+22 2011  1.92   -2.25   6.55      NS  1.23   -0.82   3.28      NS
+23 2012  3.12   -0.19   7.21      NS  0.72   -2.74   4.05      NS
+24 2013  4.08    0.92   8.56     sig  2.97   -0.83   7.66      NS
+25 2014  7.01    0.68  14.61     sig  4.38    0.65  10.34     sig
+26 2015 11.39    2.00  25.60     sig    NA      NA     NA    <NA>
+
+*******************************************************
+
+> write.xlsx(analysis3,file=xlsfile,sheet='Analysis 3',row.names = FALSE,append=TRUE)
+> 
+> 
+> proc.time()
+    user   system  elapsed 
+14357.98   269.01 15259.00 
