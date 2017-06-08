@@ -1,4 +1,24 @@
 fggob.version="v1.0 29/9/16 fgregion added"
+fggob.version="v1.1	03/10/2016 glmboot option added to fgindex"
+fggob.version="v1.2	18/10/2016 binomial added"
+fggob.version="v1.3	22/12/2016	bsave replaces bfile"
+fggob.version="v1.31	23/12/2016	covariate estimates saved and printed"
+fggob.version="v1.4	29/12/2016	sorting order of output variables"
+fggob.version="v1.41	31/12/2016	correcting bug in printing covariates"
+fggob.version="v1.5	9/1/2017 predicting over all sites, plus correcting bugs"
+fggob.version="v1.51	14/1/2017 print coefs with model & correct bug"
+fggob.version="v1.52	15/1/2017 fgregion changes, inc pvalue arg & return"
+fgglob.version="v1.53	30/05/2017Sorts bug re tcount & message for invalid base year"
+fgglob.version="v1.54 5/6/2017 Bugs in fgdata converting site, year to factors"
+fgglob.version="v1.6 6/6/2017 Bugs in prediction (for binomial)"
+#**************************************************************************** 
+# Mode function (capital M because mode is built in function)
+# from http://stackoverflow.com/questions/2547402/is-there-a-built-in-function-for-finding-the-mode
+#**************************************************************************** 
+Mode <- function(x) {
+  ux <- unique(x)
+  ux[which.max(tabulate(match(x, ux)))]
+}
 #**************************************************************************** 
 # fgdata function: defines model for fgindex & fgregion
 # Sets up following global variables for use in subsequent analyses
@@ -15,7 +35,7 @@ fggob.version="v1.0 29/9/16 fgregion added"
 fgdata<-function(formula,
                  distribution=c("poisson","binomial"),
                  offset){
-  vertext=fggob.version
+  vertext=fgglob.version
   #print(vertext,quote=FALSE)
   #match.arg gets full name if abbreviated in function call
   distribution=match.arg(distribution)
@@ -27,8 +47,8 @@ fgdata<-function(formula,
     #next 2 lines no longer needed as use match.arg
  #   if ((distribution!="poisson") & (distribution!="negbin") & (distribution!="binomial"))
  #     stop("Fault: Distribution must be set to 'poisson', 'negbin' or 'binomial'")
-    if (distribution=="binomial") 
-      stop("Fault: binomial not yet allowed") 
+    if (distribution=="negbin") 
+      stop("Fault: negative binomial not yet allowed") 
     #need to do checks and preferably allow scalar
     fgglob.distribution<<-distribution
     #position of site variable in dataframe
@@ -36,10 +56,10 @@ fgdata<-function(formula,
     
     #check sites to make sure factor
     if(is.factor(fgglob.data[[spos]])==FALSE) 
-      fgglob.data[[spos]]<-factor(fgglob.data[[spos]])
+      fgglob.data[[spos]]<<-factor(fgglob.data[[spos]])
     #check years to make sure factor
     if(is.factor(fgglob.data[[spos+1]])==FALSE) 
-         fgglob.data[[spos+1]]<-factor(fgglob.data[[spos+1]])
+         fgglob.data[[spos+1]]<<-factor(fgglob.data[[spos+1]])
     yrlev=as.numeric(levels(fgglob.data[[spos+1]]))
     nyr=length(yrlev)
     
@@ -53,10 +73,25 @@ fgdata<-function(formula,
     fgglob.data$offset<<-offset
 
     #create dummy dataframe for predictions
-    fgglob.preddf<<-data.frame(fgglob.data[1:nyr,])
-    fgglob.preddf[]<<-fgglob.data[1,]
-    fgglob.preddf$vyears<<-yrlev
-    fgglob.preddf$year<<-as.factor(yrlev)
+    #v1.5 5/1/17 switch to predicting all site x year combinations, so can average
+    #on natural scale - makes big difference for binomial models
+    ns=nlevels(fgglob.data[[spos]])
+    sitelev=levels(fgglob.data[[spos]])
+    #next statement sets up df with correct number rows and correct column names
+    #some columns (e.g. y variable) not needed but simpler to take all
+    fgglob.preddf<<-fgglob.data[rep(1,nyr*ns),]
+    fgglob.preddf[[spos]]<<-factor(rep(sitelev,each=nyr),levels=sitelev)
+    fgglob.preddf[[spos+1]]<<-factor(rep(yrlev,ns),levels=yrlev)
+    fgglob.preddf$vyears<<-rep(yrlev,ns) 
+    ncpreddf=ncol(fgglob.preddf)
+    lastcovpos=ncpreddf-3 #vyears,weights, offset at end
+    firstcovpos=spos+3
+    if (lastcovpos>=firstcovpos){
+      for (i in firstcovpos:lastcovpos) {
+        if (is.factor(fgglob.data[[i]])) fgglob.preddf[[i]]<<-Mode(fgglob.preddf[[i]])
+        else fgglob.preddf[[i]]<<-mean(fgglob.data[[i]],na.rm=TRUE)
+      }
+    }
     
     tvar<-character(length=5)
     tvar[1]<-paste("Response variable:",fgnames[1])
@@ -75,10 +110,10 @@ fgdata<-function(formula,
 #**************************************************************************** 
 
 #****************************************************************************
-
+#****************************************************************************
 # fgindex function for fitting GAM models
 # First use fgdata to define model
-
+#****************************************************************************
 #****************************************************************************
 fgindex<-function(print="summary",
                   weights,       # default weights all equally
@@ -88,7 +123,9 @@ fgindex<-function(print="summary",
                   nmonitor=0,    # monitoring progress e.g. 5 to show every 5th
                   baseyear=-99,  # -99 sets to second year of series
                   plot=FALSE,
-                  title="NULL")  {
+                  title="NULL",
+                  bsave=FALSE,   #Replaces bfile v1.3 22/12/16
+                  glmboot=FALSE)  { 
 vertext="v0.2 18/6/16 with dataframe set up by fginit"
 vertext="v0.3 23/6/16 with dataframe for results"
 vertext="v0.4 6/7/16 switching to formula in fgdata"
@@ -96,11 +133,11 @@ vertext="v0.5 14/7/16 (first working version), dataframe construction in fgdata"
 vertext="v0.6 4/8/16 multiple spline df"
 vertext="v0.7 12/09/2016 droplevels() in fgdata"
 vertext="v0.8 19/09/2016 Sorted bug if splinedf unset"
-vertext=fggob.version
+vertext=fgglob.version
 #print(vertext,quote=FALSE)
 
 #check print arguments
-print=match.arg(print,choices=c("summary", "model","bootstrap","none"),
+print=match.arg(print,choices=c("summary", "model","bootstrap","covariates","none"),
                 several.ok = TRUE)
 
 #****************************************************************************
@@ -110,13 +147,17 @@ print=match.arg(print,choices=c("summary", "model","bootstrap","none"),
   #spos is position of site within fgglob.data, year is spos+1
   yrlev=as.numeric(levels(fgglob.data[[spos+1]]))
   nyr=length(yrlev)
+  nsites=length(levels(fgglob.data[[spos]]))
   #Descs needs to have at least 12 values, if less years just take first nyr values
   desclength=max(nyr,12)
   Descs=character(length=desclength)
   Descs[1]=fgglob.tvar[1]
   Descs[2]=paste("Distribution:     ",fgglob.distribution)
-  tform=deparse(fgglob.formula)
-  Descs[3]=paste("Model:    x       ",tform)
+#  tform=paste0(deparse(fgglob.formula),collapse ='')
+  tform=Reduce(paste, deparse(fgglob.formula,width.cutoff=500))
+#  tform=deparse(fgglob.formula,width.cutoff=500)
+#  tform=gsub(" ",tform,replacement="")
+  Descs[3]=paste("Model:            ",tform)
   #splinedf
   ndf=length(splinedf)
   #fewster default for spline df
@@ -134,7 +175,7 @@ print=match.arg(print,choices=c("summary", "model","bootstrap","none"),
   Descs[9]="GAM method:        full"  #genstat annual method not currently implemented
   Descs[10]=fgglob.tvar[2]
   Descs[11]=paste("Total sites:      ",format(nlevels(fgglob.data[[spos]])))
-  Descs[12]=paste("Prog version:      ",vertext)
+  Descs[12]=paste("Prog version:     ",vertext)
   fgresults=data.frame(Desc=as.character(Descs[1:nyr]),Year=yrlev)
   fgresults$Desc=as.character(fgresults$Desc)
   #,Ncount,Nsite,Rawmean,
@@ -143,13 +184,14 @@ print=match.arg(print,choices=c("summary", "model","bootstrap","none"),
 
   #fgresults$Desc=Descs[1:nyr]
   fgresults$Nobs=tapply(is.na(fgglob.data[[1]])==FALSE,fgglob.data[[spos+1]],sum)
+  #following corrected 12/9/16 to refer to fgglob.data not names
+  tcount=function(x) {length(unique(x))}
+  fgresults$Nsite=tapply(fgglob.data[[spos]],fgglob.data[[spos+1]],tcount)
   fgresults$Mean=tapply(fgglob.data[[1]],fgglob.data[[spos+1]],mean)
   fgresults$SE_mean=tapply(fgglob.data[[1]],fgglob.data[[spos+1]],sd)/sqrt(fgresults$Nobs)
-  tcount=function(x) {length(unique(x))}
-  #following corrected 12/9/16 to refer to fgglob.data not names
-  fgresults$Nsite=tapply(fgglob.data[[spos]],fgglob.data[[spos+1]],tcount)
 
   nv=length(fgglob.data[[1]])
+  ns=nlevels(fgglob.data[[spos]])
   
   if (nmonitor==0) nmonitor=99999  #0 gives fault with %%, 26/9/16 changed from -1
 
@@ -164,29 +206,33 @@ print=match.arg(print,choices=c("summary", "model","bootstrap","none"),
   #create dataframe of variables for model
   if (!missing(weights)) fgglob.data$weights<<-weights
 
-# create formulaa for modela
+# create formula for modela
   fgnames=names(fgglob.data)
   tspline=paste("s(vyears, ",format(splinedf[1]),")")
   tform=sub(fgnames[spos+1],tspline,tform)
   fform=as.formula(tform)
   fformglm=fgglob.formula
   
+  if (sum(is.na(fgglob.data))>0){
+    cat("\nWARNING: Missing values present in data matrix.  This can ")
+    cat("sometimes cause problems. \nIf program crashes try removing NAs.\n") }
+
 #****************************************************************************
 #fit models 
 #if multiple df just fit saturated (glmfit) model
 #****************************************************************************
-  if (fgglob.distribution=="poisson"){
     if (ndf==1) {
-     gamfit <- gam(fform, family = poisson(link = log),data=fgglob.data,
+     gamfit <- gam(fform, family = fgglob.distribution,data=fgglob.data,
                 offset=offset,weights=weights)  }
-  glmfit=glm(fformglm,family=quasipoisson(link="log"),data=fgglob.data,
-             offset=offset,weights=weights)}
+  glmfit=glm(fformglm,family=fgglob.distribution,data=fgglob.data,
+             offset=offset,weights=weights)
   
 #****************************************************************************
 #  deal with multiple splines - fit spline models to saturated estimates
 #****************************************************************************
   if (ndf>1){
-    predglm <- predict.glm(glmfit,type="response",newdata=fgglob.preddf)
+    predglm <- tapply(predict.glm(glmfit,type="response",newdata=fgglob.preddf),
+       fgglob.preddf[[spos+1]],mean)
     aic=c(rep(NA,ndf))
     #structures to export results
     #will fail if n splinedf>n years, but this would be silly anyway
@@ -194,7 +240,7 @@ print=match.arg(print,choices=c("summary", "model","bootstrap","none"),
     fgresults$aic=c(rep(NA,desclength))
     #loop through fitting spline with required df to pred vals from saturated model
     for (i in 1:ndf) {
-      fitspl=gam(predglm~s(fgglob.preddf$vyears,splinedf[i]))
+      fitspl=gam(predglm~s(yrlev,splinedf[i]))
       aic[i]=summary(fitspl)$aic
       fgresults$aic[i]=aic[i]
       fgresults[,i+8]=predict(fitspl)
@@ -206,48 +252,95 @@ print=match.arg(print,choices=c("summary", "model","bootstrap","none"),
     #print as data frame to get in columns
       print(as.data.frame(list(splinedf,aic),col.names=c("d.f.","AIC")))
       }#printing if
-
+    if (plot==TRUE){fgplot(fgresults)  } 
 #exiting function using stop.  This is not ideal since throws a fault, but
 #saves the complication of putting subsequent programming in an if statement
     return(fgresults)
     stop("No bootstrapping with multiple spline d.f.",call.=FALSE)
   }  #end of multiple splinedf if()
-
-  predgam <- predict.gam(gamfit,type="response",newdata=fgglob.preddf)
+  ppredgam=predict.gam(gamfit,type="response",newdata=fgglob.preddf)
+  predgam <- tapply(ppredgam,
+                    fgglob.preddf[[spos+1]],mean)
+  if (sum(yrlev==fgglob.baseyear)==0){
+  #exiting function using stop if no data for baseyear
+    print(table(fgglob.data[[spos+1]]))
+    cat(paste0("\n***** FAULT: no data for specified base year of ",
+         fgglob.baseyear,". *****\n\n"))
+    return(fgresults)
+    stop("No data for specified base year",call.=FALSE)}
   baseyrno=which(yrlev==fgglob.baseyear)
   fgresults$Smoothed=predgam/predgam[baseyrno]*100
   fgresults$se_sm=c(rep(NA,nyr))
   fgresults$low_sm=c(rep(NA,nyr))
   fgresults$up_sm=c(rep(NA,nyr))
 
-  predglm <- predict.glm(glmfit,type="response",newdata=fgglob.preddf)
+  predglm <- tapply(predict.glm(glmfit,type="response",newdata=fgglob.preddf),
+                    fgglob.preddf[[spos+1]],mean)
   fgresults$Unsmoothed=predglm/predglm[baseyrno]*100
   fgresults$se_unsm=c(rep(NA,nyr))
   fgresults$low_unsm=c(rep(NA,nyr))
   fgresults$up_unsm=c(rep(NA,nyr))
   
+  #23/12/16 get covariate estimates
+  est=coefficients(gamfit)
+  estlab=names(est)
+  # calc starting position for covariates in vector of estimates constant+(nsites-1)+linyr
+  covstart=nsites+2  
+  nvest=length(est)
+  ncov=length(covstart:nvest)
+  setcov=covstart<=nvest
+  #print(data.frame(nyr,nsites,covstart,nvest,ncov,setcov))
+  if (setcov) covest=est[covstart:nvest]
+
   ask="\n*******************************************************\n\n"
   if (any(print=="model")){
     cat("\n**************** GAM Model ****************\n\n")
  #   print(summary(fgglob.data))
     print(summary(gamfit))
  #   print(data.frame(yrlev,predgam))
+    cat("\n**************** Coefficients from GAM Model ****************\n\n")
+    nsp1=ns+1
+    print(data.frame(Estimate=est[c(1,nsp1:nvest)]))
+    cat("\nExcludes site estimates\n")
     cat(ask)
   }
   #****************************************************************************
-  # On to bootstrapping if required
+  # On to bootstrapping if required, but first define remaining cols of fgresults
+  # so that they exist and don't cause fault in fgprint
+  # nb don't change order of definition or mucks up results output to xlsx
   #****************************************************************************
+  fgresults$diff=c(rep(NA,nyr))
+  fgresults$low_dif=c(rep(NA,nyr))
+  fgresults$up_dif=c(rep(NA,nyr))
+  fgresults$chg=c(rep(NA,nyr))
+  fgresults$low_chg=c(rep(NA,nyr))
+  fgresults$up_chg=c(rep(NA,nyr))
+  fgresults$sig_chg=c(rep(NA,nyr))
+  fgresults$sig_dif=c(rep(NA,nyr)) # out of natural order as not present in Genstat
+  fgresults$cov_name=c(rep("",nyr))
+  fgresults$cov_est=c(rep(NA,nyr))
+  fgresults$low_cov=c(rep(NA,nyr))
+  fgresults$up_cov=c(rep(NA,nyr))
   if (nboot<1){
+    if (any(print=="summary")){
+      fgprint(fgresults,round=TRUE)
+      cat(ask)
+    }
+#    if (plot==TRUE){fgplot(fgresults)  } gives fault
     return(fgresults)
     stop()  }
 
 #structures for bootstrapping
   siteunits=split(1:nv,fgglob.data[[spos]]) #unitnos for each site
   nrowsites=c(table(fgglob.data[[spos]]))
-  nsites=length(levels(fgglob.data[[spos]]))
+
   #need to change sites in preddf so uses new site numbers 1:nsites not original levels
-  fgglob.preddf[[spos]]=factor(rep(1,nyr),levels=c(1:nsites)) 
-  bootpred=matrix(nrow=nboot,ncol=nyr)
+  local.preddf=fgglob.preddf
+  local.preddf[[spos]]=factor(rep(1:nsites,each=nyr),levels=c(1:nsites))
+  bootpred=matrix(nrow=nboot,ncol=nyr,dimnames=list(1:nboot,yrlev))
+  xyrlev=paste0("x",yrlev)
+  bglmpred=matrix(nrow=nboot,ncol=nyr,dimnames=list(1:nboot,xyrlev))
+  if (setcov) bcovest=matrix(nrow=nboot,ncol=length(covstart:nvest))
   
   time0=Sys.time()
   for (i in 1:nboot) {
@@ -258,10 +351,21 @@ print=match.arg(print,choices=c("summary", "model","bootstrap","none"),
 #overwrite sites with new site nos, rather than site data has come from
     newdf[[spos]]=as.factor(bsites)
 
-    bootgam <- gam(fform, family = poisson(link = log),data=newdf,
+    bootgam <- gam(fform, family = fgglob.distribution,data=newdf,
                 offset=offset,weights=weights)  
 
-    bootpred[i,] <- predict.gam(bootgam,type="response",newdata=fgglob.preddf)
+    bootpred[i,] <- tapply(predict.gam(bootgam,type="response",newdata=local.preddf),
+       local.preddf[[spos+1]],mean)
+    if (setcov) {
+      best=coefficients(bootgam) #changed est to best 14/1/17
+      bcovest[i,]=best[covstart:nvest]
+    }
+    if (glmboot){
+      bootglm <- glm(fformglm, family = fgglob.distribution,data=newdf,
+                     offset=offset,weights=weights)  
+      bglmpred[i,] <- tapply(predict.glm(bootglm,type="response",newdata=local.preddf),
+           local.preddf[[spos+1]],mean)
+    }
 #output time etc every nmonitor bootstraps, plus details if print="bootstrap"
     if ((i%%nmonitor)==0) {
       ttime=format(Sys.time(), "%d %b %Y %X %Z")
@@ -288,17 +392,26 @@ print=match.arg(print,choices=c("summary", "model","bootstrap","none"),
     fgresults$up_sm=apply(bootpred,2,quantile,prob=sup)
     lmeth="percentile limits"
   }
+  #and similarly for the unsmoothed version from the GLM
+  if (glmboot){
+  bglmpred=bglmpred/bglmpred[,baseyrno]*100
+    if(nboot>5) fgresults$se_unsm=apply(bglmpred,2,sd)
+    if ((nboot<99)&(nboot>5)){
+      fgresults$low_unsm=fgresults$Unsmoothed-2*fgresults$se_unsm
+      fgresults$up_unsm=fgresults$Unsmoothed+2*fgresults$se_unsm
+    } 
+    if (nboot>98){
+      fgresults$low_unsm=apply(bglmpred,2,quantile,prob=slow)
+      fgresults$up_unsm=apply(bglmpred,2,quantile,prob=sup)
+    }
+  } #glmboot
   #****************************************************************************
   # Change and difference
   #****************************************************************************
-  fgresults$low_dif=c(rep(NA,nyr))
-  fgresults$up_dif=c(rep(NA,nyr))
-  fgresults$diff=c(rep(NA,nyr))
-  fgresults$sig_dif=c(rep(NA,nyr))
-  fgresults$chg=c(rep(NA,nyr))
-  fgresults$low_chg=c(rep(NA,nyr))
-  fgresults$up_chg=c(rep(NA,nyr))
-  fgresults$sig_chg=c(rep(NA,nyr))
+  #temporarily write bootpred as global to help programming
+  bootpred<<-bootpred
+  nyr<<-nyr
+  
   for (i in 2:nyr) {
     fgresults$diff[i]=fgresults$Smoothed[i]-fgresults$Smoothed[i-1]
     dif=bootpred[,i]-bootpred[,(i-1)]
@@ -327,9 +440,14 @@ print=match.arg(print,choices=c("summary", "model","bootstrap","none"),
   }
   fgresults$sig_dif=ifelse(fgresults$low_dif>0 | fgresults$up_dif<0,"sig","NS")
   fgresults$sig_chg=ifelse(fgresults$low_chg>0 | fgresults$up_chg<0,"sig","NS")
-  #temporarily write bootpred as global to help programming
-  bootpred<<-bootpred
-  nyr<<-nyr
+
+  #covariates
+  if (setcov){
+    fgresults$cov_name[1:ncov]=estlab[covstart:nvest]
+    fgresults$cov_est[1:ncov]=est[covstart:nvest]
+    fgresults$low_cov[1:ncov]=apply(bcovest,2,quantile,prob=slow)
+    fgresults$up_cov[1:ncov]=apply(bcovest,2,quantile,prob=sup)
+  }
   
   if (any(print=="summary")){
     fgprint(fgresults,round=TRUE)
@@ -337,15 +455,25 @@ print=match.arg(print,choices=c("summary", "model","bootstrap","none"),
 }
   if (plot==TRUE){fgplot(fgresults)  } 
   
-  return(fgresults) }
+  if (bsave) {
+#    if (file.exists(bfile)) file.remove(bfile)  #14/10/16
+    if (glmboot) {
+      fgglob.bsave<<-cbind(bootpred,bglmpred)
+      } else fgglob.bsave<<-bootpred
+  }
+  
+  return(fgresults) } #end of fgindex
 
 #****************************************************************************
+#****************************************************************************
 # fgprint
+#****************************************************************************
 #**************************************************************************** 
 fgprint<-function(fgresults,round=TRUE){
-  printdf=fgresults
+  printdf=fgresults  #take copy so don't round supplied structure
   if (round==TRUE) {
-    dec=c(NA,0,0,1,2,0,2,3,2,2 ,2,3,2,2 ,2,2,2,NA ,2,2,2,NA)
+    # if round numeric structure to NA goes to all NAs
+    dec=c(NA,0,0,0,1,2,2,3,2,2 ,2,3,2,2 ,2,2,2 ,2,2,2,NA,NA,NA)
     nc=length(dec)
     for (i in 1:nc){
       if (is.numeric(printdf[[i]])) printdf[i]=round(printdf[i],dec[i])
@@ -358,15 +486,24 @@ fgprint<-function(fgresults,round=TRUE){
   cat(paste(printdf[c(8,1,10,2,3,4,9,7,6,11,12,13),1],"\n"))
   
   cat("\n\n**** GAM Smoothed & Unsmoothed Index ****\n\n")
-  print(printdf[,c(2,3,6,7,8,9,10,11,12)])
+  print(printdf[,c(2,3,4,5,7,8,9,10,11,12)])
   
   cat("\n\n**** Differences and change points ****\n\n")
-  print(printdf[,c(2,17,15,16,18,19,20,21,22)])
-}
+  print(printdf[,c(2,15,16,17,22,18,19,20,21)])
+  
+  covpres=!is.na(printdf[24])
+  if (sum(covpres,na.rm=TRUE)>=1){
+    cat("\n\n**** Covariates & bootstrap confidence intervals ****\n\n")
+    print(printdf[covpres,23:26])   
+  }
+ 
+} #end of fgprint
 
+#****************************************************************************
 #****************************************************************************
 # fgplot
 #**************************************************************************** 
+#****************************************************************************
 fgplot=function(fgresults,
                 xmin=min(fgresults$Year),
                 xmax=max(fgresults$Year),
@@ -402,7 +539,8 @@ fgplot=function(fgresults,
   }
   else {
   #set up axes and then add lines/points one at a time
-  ymin=min(fgresults$low_sm,na.rm=TRUE)
+    #14/1/17 switch to ymin=0 unless specified
+  if (missing(ymin)) ymin=0  #min(fgresults$low_sm,na.rm=TRUE)
   ymax=max(fgresults$up_sm,na.rm=TRUE)
   plot(c(xmin,xmax),c(ymin,ymax), type="n",ylab="Index",xlab=" ",main=mtitle)
   points(c(xmin-1,xmax+1),c(100,100),type="l")
@@ -421,13 +559,20 @@ fgplot=function(fgresults,
   ychange=ifelse(fgresults$sig_chg=="sig",fgresults$Smoothed,-100)
   points(fgresults$Year,ychange,type="p",pch=15,col="red")
   mtext(c("red squares are sig change points, where slope changes",
-          "red triangles are where difference between years is sig"),side=1,line=c(2,3))
+          "red triangles are where difference between years is sig"),
+        side=1,line=c(2,3),cex=0.6)
   } #end of plotting for full results
-}
+} #end of fgplot
+
+#****************************************************************************
+#****************************************************************************
+# fgregion
+#****************************************************************************
+#****************************************************************************
 fgregion<-function(print="summary",
                    weights,       # default weights all equally
                    splinedf=-99,  # default 0.3*nyears
-                   confidence=95,
+                   pvalue=0.05,   #pvalue (For early exit 14/1/17)
                    nrand=100,       # number of randomisations
                    ncheck=0,        # number at which to check for early halt
                    nmonitor=0,    # monitoring progress e.g. 5 to show every 5th
@@ -436,11 +581,11 @@ fgregion<-function(print="summary",
                    plot=FALSE,
                    title="NULL")  {
   #edited from v0.8 of fgindex
-  vertext=fggob.version
+  vertext=fgglob.version
   #print(vertext,quote=FALSE)
   
   #check print arguments
-  print=match.arg(print,choices=c("summary", "model","rand","none"),
+  print=match.arg(print,choices=c("summary", "model","rand","none","yeartab"),
                   several.ok = TRUE)
   
   #****************************************************************************
@@ -455,8 +600,9 @@ fgregion<-function(print="summary",
   Descs=character(length=desclength)
   Descs[1]=fgglob.tvar[1]
   Descs[2]=paste("Distribution:     ",fgglob.distribution)
-  tform=deparse(fgglob.formula)
-  Descs[3]=paste("Model:    x       ",tform)
+#  tform=deparse(fgglob.formula)
+  tform=Reduce(paste, deparse(fgglob.formula,width.cutoff=500))
+  Descs[3]=paste("Model:            ",tform)
   #splinedf
   ndf=length(splinedf)
   #fewster default for spline df
@@ -472,7 +618,6 @@ fgregion<-function(print="summary",
   if (missing(title)) title=paste("GAM regions ",format(Sys.time(), "%d %b %Y %X %Z"))
   Descs[8]=paste(" Title:            ",title)
   Descs[9]="GAM method:        full"  #genstat annual method not currently implemented
-  Descs[10]=fgglob.tvar[2]
   Descs[11]=paste("Total sites:      ",format(nlevels(fgglob.data[[spos]])))
   Descs[12]=paste("Prog version:     ",vertext)
   #,Ncount,Nsite,Rawmean,
@@ -483,9 +628,6 @@ fgregion<-function(print="summary",
   
   if (nmonitor==0) nmonitor=99999  #0 gives fault with %%, 26/9/16 changed from -1
   
-  #confidence limits
-  slow=(1-confidence/100)/2
-  sup=1-slow
   #if baseyear not set, take second year in series
   if (baseyear==-99)
     baseyear<-levels(fgglob.data[[spos+1]])[2]
@@ -510,12 +652,13 @@ fgregion<-function(print="summary",
   reglevs=levels(region)
   nreg=length(reglevs)
   sitereg=tapply(as.numeric(region),fgglob.data[spos],min)
-  if (sum(tapply(as.numeric(region),fgglob.data[spos],var))>0){
+  # 14/1/17use na.rm=TRUE below in case missing values or single obs
+  if (sum(tapply(as.numeric(region),fgglob.data[spos],var),na.rm=TRUE)>0){
     stop("Each site can only be in one region.")  }
   devsep=c(rep(NA,nrand));dfsep=c(rep(NA,nrand))
   devcom=c(rep(NA,nrand));dfcom=c(rep(NA,nrand))
   ask = "\n*******************************************************\n\n"
-  
+  time0=Sys.time()
   for (j in 1:nrand) {
     if ((j%%nmonitor)==0) {
       ttime=format(Sys.time(), "%d %b %Y %X %Z")
@@ -523,9 +666,9 @@ fgregion<-function(print="summary",
     #****************************************************************************
     #fit overall model
     #****************************************************************************
-    if (fgglob.distribution == "poisson") {
-      gamfit <-gam(fformreg,family = poisson(link = log),
-                   data = fgglob.data,offset = offset,weights = weights)  }
+   # if (fgglob.distribution == "poisson") {
+      gamfit <-gam(fformreg,family = fgglob.distribution,
+                   data = fgglob.data,offset = offset,weights = weights)  
     
     #print summary of model if requested and if either first loop (real data) or nmon
     if (any(print == "model") & (((j %% nmonitor) == 0) | (j == 1))) {
@@ -538,7 +681,7 @@ fgregion<-function(print="summary",
     #define these in loop so values not carried from last loop
     rdevsep=c(rep(NA,nreg));rdfsep=c(rep(NA,nreg)) #regional dev/df at each rand
     for (i in 1:nreg) {
-      subfit = gam(fform,family = poisson(link = log),
+      subfit = gam(fform,family = fgglob.distribution,
                    data = subset(fgglob.data, (region == reglevs[i])),
                    offset = offset,weights = weights) 
       #print deviance of model if requested and if either first loop (real data) or nmon
@@ -555,9 +698,12 @@ fgregion<-function(print="summary",
     dfsep[j]=sum(rdfsep)
     if (j==ncheck){  #check for early exit if cant be sig in full set
       ngt=sum((devcom-devsep)>=(devcom[1]-devsep[1]),na.rm=TRUE)
-      if (ngt>(nrand*0.05)) {
+      if ((ngt-1)>(nrand*pvalue)) { #14/1/17 -1 to allow for real model
         nrand=j
         break}
+      else{   #added 14/1/17
+        cat("\n**** Running further randomisations ****\n")
+        cat("\nncheck = ",ncheck,", ngt  ",ngt,"\n\n")}
     }  #ncheck if
     #********************************************************************************
     # finally randomise regions to sites for next loop
@@ -565,44 +711,56 @@ fgregion<-function(print="summary",
     rsitereg=sample(sitereg) #sample with no args set randomises data
     region=reglevs[rsitereg[fgglob.data[[spos]]]]
   } #nrand loop j
+  timetaken=Sys.time()-time0
   devdif=devcom-devsep
   dfdif=dfcom-dfsep
   dfint=dfcom-dfsep  #df for interaction
   #asymptotic deviance test
   preal=pchisq(devdif[1],dfdif[1],lower.tail = FALSE)
   prand=mean(devdif>=devdif[1],na.rm = TRUE)
-  plist=list(preal,prand)
+  ngteq=sum(devdif>=devdif[1],na.rm = TRUE)
+  nless=sum(devdif<devdif[1],na.rm = TRUE)
+  pvalues=structure(c(preal,prand),names=c("P dev","P rand"))
+  Descs[10]=paste("N final rand:     ",nrand)  #nb recalculated if quit early
   
-  cat("\n\n**** GAM Regional Analysis ****\n\n")
-  #use which to remove empty rows in Desc - or instead specify directly
-  #cat(paste(printdf[which(printdf$Desc!=""),1],"\n"))
-  printdf=data.frame(Descs)
-  cat(paste(printdf[c(8,1,10,2,3,4,9,7,6,11,12,13),1],"\n"))
-  print(yeartab)
+  if (any(print == "summary")) {
+    cat("\n\n**** GAM Regional Analysis ****\n\n")
+    #use which to remove empty rows in Desc - or instead specify directly
+    #cat(paste(printdf[which(printdf$Desc!=""),1],"\n"))
+    Descs[13]=paste("Time 100 loops:   ",
+          format(timetaken*100/nrand,nsmall=1))
+    printdf=data.frame(Descs)
+    cat(paste(printdf[c(8,1,2,3,4,9,7,6,10,11,12,13),1],"\n"))
+  }
+  if (any(print == "yeartab")) print(yeartab)
   
-  cat("\n**************** Deviances for observed data ****************\n")
-  cat("\ncommon dev:     ",devcom[1],"\ncommon df:      ",dfcom[1])
-  cat("\nseparate dev:   ",devsep[1],"\nseparate df:    ",dfsep[1])
-  cat("\ndifference dev:   ",devdif[1],"\ndifference df:    ",dfint[1])
-  cat("\n\n**************** Deviance test for interation ****************\n")
-  cat("\nAsymptotic P-value: ",round(preal,3))
-  cat("\nRandomisation P-value: ",round(prand,3),"\n")
-  quants=c(0.01,0.05,0.1,0.25,0.5,0.75,0.9,0.95,0.99)
-  devquants=quantile(devdif,probs=quants,na.rm = TRUE)
-  print(data.frame(quants,devquants))
-  
+  if (any(print == "summary")) {
+    cat("\n**************** Deviances for observed data ****************\n")
+    cat("\ncommon dev:     ",devcom[1],"\ncommon df:      ",dfcom[1])
+    cat("\nseparate dev:   ",devsep[1],"\nseparate df:    ",dfsep[1])
+    cat("\ndifference dev:   ",devdif[1],"\ndifference df:    ",dfint[1])
+    cat("\n\n**************** Deviance test for differences in trend ****************\n")
+    cat("\nAsymptotic P-value: ",round(preal,3))
+    cat("\nRandomisation P-value: ",round(prand,3),"\n")
+    quants=c(0.01,0.05,0.1,0.25,0.5,0.75,0.9,0.95,0.99)
+    devquants=quantile(devdif,probs=quants,na.rm = TRUE)
+    print(data.frame(quants,devquants))
+  }
   #check for fails where df for interaction wrong
   #note that df not always exact integer so dont just use !=
   nfail=sum((abs(dfint-dfint[1]))>0.1,na.rm = TRUE)
   pfail=nfail/nrand
   if (pfail>0.05){
-    table(dfint)
+    print(table(round(dfint,2)))
     cat("\nRandomisations fail: ",nfail," due to incorrect df")
     stop("Too many randomisations fail.")  }
   if (nfail>0){
-    table(dfint)
-    cat("\nWARNING: ",nfail,"randomisations fail due to incorrect df") }
-  
-  return(list(devcom,devsep,dfcom,dfsep,Descs,plist))
-}
-
+    cat("\nWARNING: ",nfail,"randomisations fail due to incorrect df") 
+    print(table(round(dfint,2)))}
+  #nvalues added 15/1/17
+  nvalues=structure(c(nrand,ngteq,nless,nfail),
+                    names=c("n rand","n>=real","n<real","n fail"))
+  results=setNames(list(devcom,devsep,dfcom,dfsep,Descs,pvalues,nvalues),
+                  c("devcom","devsep","dfcom","dfsep","Descs","pvalues","nvalues"))
+  return(results)
+} #end of fgregion
