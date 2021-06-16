@@ -3,13 +3,16 @@
 #datafile similar to that produced from Genstat in 2016 except:
 # 1. completion now renamed duration
 # 2. groupings of temperatures etc not included
+#10/11/17 2017 PROCESSING remove use of yvar
+#11/12/19 save HibernationCountID in hib data frame to ease matching
 
 timestamp()
 R.Version()$version.string
 options(width=180)
 rm(list=ls())  #ensure memory clear
 
-library(xlsx)
+#library(xlsx)  #12/1/21 switch to openxls as failed with 64 bit R
+library(openxlsx)
 library(RODBC)
 library(lubridate)  #used for day numbers
 library(rgdal)   #OS grid refs in function below
@@ -18,36 +21,76 @@ source("C:/data/dog/rgamcode/gridref_code.R")
 ###########################################################################
 #set maximum year to exclude early records from following year
 ###########################################################################
-maxyear=2016
+maxyear=2020
 
 ###########################################################################
 #set up database connection
+#Following tables used:
+#query_hib_year (combines dbo_HibernationCount_DC, dbo_HibernationCountYear &
+#       dbo_HibernationSite)
+#dbo_HibernationCountStatus
+#dbo_Species, dbo_HibernationCountSpecies
+#dbo_StructureType order,dbo_HibernationSiteCrevices
+#dbo_HibernationSiteDisturbance,dbo_HibernationSiteSize
+#dbo_HibernationSiteSurveyability
+#dbo_County,dbo_Region, dbo_Country
 ###########################################################################
 #need to do this in two stages, as otherwise get fault
+#alternatives for accdb or mdb - quote out one not needed
 db<-file.path("C:/databases/batlinks_newdb.accdb") #connect database.
 channel<-odbcConnectAccess2007(db) #'channel' to identify database 
+#db<-file.path("C:/databases/batlinks_newdb.mdb") #connect database.
+#channel<-odbcConnectAccess(db) #'channel' to identify database 
 
 ###########################################################################
 #First get roost and survey data using query to produce 1 row per survey
+#query_hib_year
+#SELECT dbo_HibernationSite.Code, dbo_HibernationCountYear.CountYear, 
+#dbo_HibernationCountYear.ObserverID, dbo_HibernationCount_DC.*, dbo_HibernationSite.SiteName, 
+#dbo_HibernationSite.CountyID, dbo_HibernationSite.Postcode, dbo_HibernationSite.GridReference, 
+#dbo_HibernationSite.StructureTypeID, dbo_HibernationSite.HibernationSiteSizeID, 
+#dbo_HibernationSite.HibernationSiteCrevicesID, dbo_HibernationCount_DC.ID AS Expr1, 
+#dbo_HibernationSite.Exits, dbo_HibernationSite.IsAccessible, 
+#dbo_HibernationSite.HibernationSiteDisturbanceID, dbo_HibernationSite.HibernationSiteSurveyabilityID, 
+#dbo_HibernationSite.Projection, dbo_HibernationCountYear.SiteChangeComment
+#FROM (dbo_HibernationCountYear LEFT JOIN dbo_HibernationSite ON 
+#dbo_HibernationCountYear.HibernationSiteID = dbo_HibernationSite.ID) LEFT JOIN 
+#dbo_HibernationCount_DC ON dbo_HibernationCountYear.ID = dbo_HibernationCount_DC.HibernationCountYearID
+#ORDER BY dbo_HibernationSite.Code, dbo_HibernationCount_DC.ConvertedDate;
 ###########################################################################
 tsql='select * from query_hib_year order by Code,ConvertedDate'
 hibyear <- sqlQuery( channel , tsql)
+cat(paste0("\n",nrow(hibyear)," rows of data imported from query_hib_year"))
 
 # check for missing IDs & remove
 # these occur if entry in dbo_HibernationCountYear but not dbo_HibernationCount
-# To investigate, paste list into _check_orphans.gen"
+# email from Becky 13 December 2017 12:21 - good reasons for them, but continue
+# to send for checking
 if (sum(is.na(hibyear$ID))>0) {
-  print(hibyear[is.na(hibyear$ID),c("Code","CountYear")])
+  cat('\n\n Warning: the following records have missing ID \n',
+    'This suggests record present in dbo_HibernationCountYear with no corresponding\n',
+        'record in dbo_HibernationCount_DC\n\n')
+  hibyear$SiteChangeComment=substr(hibyear$SiteChangeComment,1,50)
+  print(hibyear[is.na(hibyear$ID),c("Code","CountYear","SiteChangeComment")])
   hibyear=hibyear[!is.na(hibyear$ID),]
 }
 
-# and years beyond current processing year
+# check for years beyond current processing year
 # some differences between calculated year and CountYear, so use calculated, plus
-# summer months handled differently
-vy=year(hibyear$ConvertedDate)+(month(hibyear$ConvertedDate)>=6)
-diffyr=abs(hibyear$CountYear-vy)>0
-data.frame(tapply(diffyr,month(hibyear$ConvertedDate),sum))
+# 16/11/17 switch to month>=9, rather than 6, to match dayno definition
+vy=year(hibyear$ConvertedDate)+(month(hibyear$ConvertedDate)>=9)
+diffyr=(abs(hibyear$CountYear-vy)>0)&(month(hibyear$ConvertedDate)!=9)
+if (sum(diffyr)){
+cat('\nTable below shows where calculated year differs from CountYear \n')
+cat('Should only occur in september (due to different year definition)\n')
+#print(data.frame(tapply(diffyr,month(hibyear$ConvertedDate),sum)))
+print(hibyear[diffyr,c("Code","CountYear","ConvertedDate")])
+}
+
+# remove those beyond the processing year (often occurs if records from current
+# winter entered, but may also be typos)
 if (sum(vy>maxyear)>0) {
+  cat('\nWarning: some dates beyond the maximum specified (variable "maxyear") \n')
   print(hibyear[vy>maxyear,c("Code","CountYear","ConvertedDate")])
   hibyear=hibyear[!vy>maxyear,]
 }
@@ -65,13 +108,16 @@ hibyear=hibyear[!hibyear$Projection=="OSI",]
 # doesn't have levels/labels distinction
 hibyear$site=factor(hibyear$Code)
 hibyear$sitename=factor(paste(hibyear$Code,hibyear$SiteName))
-hib=data.frame(site=factor(hibyear$Code),
-               sitename=factor(paste(hibyear$Code,hibyear$SiteName)),
+hib=data.frame(site=factor(hibyear$Code))
+               
+hib$sitename=factor(paste(hibyear$Code,hibyear$SiteName))
 # as.character needed or get errors
-               date=as.Date(as.character(hibyear$ConvertedDate)),
+hib$date=as.Date(as.character(hibyear$ConvertedDate))
 #               date=hibyear$ConvertedDate,  #POSIX
-               period=factor(hibyear$DatePeriod),
-               nsurv=hibyear$NumObservers,nlic=hibyear$NumLicensed)
+hib$id=hibyear$ID  #11/12/19
+hib$period=factor(hibyear$DatePeriod)
+hib$nsurv=hibyear$NumObservers
+hib$nlic=hibyear$NumLicensed
 
 # sort temperatures
 hib$exttemp=hibyear$ExternalTemperature
@@ -86,6 +132,7 @@ hib$tempcool[switch]=hibyear$InternalTemperatureWarmest[switch]
 #count status
 tsql='select * from dbo_HibernationCountStatus'
 statdf <- sqlQuery( channel , tsql)
+
 #NB levels is format in hibyear df, labels is how should be labelled
 hib$status=factor(hibyear$HibernationCountStatusID,levels=as.character(statdf$ID),
                     labels=statdf$Description)
@@ -93,10 +140,12 @@ data.frame(summary(hib$status))
 
 # 7/7/17 change 'completion' to duration
 hib$duration=hibyear$Duration
-#hib$dayno=lubridate::yday(hib$date) #see below - calc from 1st Sept
 hib$month=factor(month(hib$date))
-hib$year=factor(year(hib$date)+(hib$month>=6))
-hib$dayno=as.numeric(hib$date)-as.numeric(as.Date(ISOdate(hib$year-1,9,1)))
+oldyear=as.numeric(month(hib$date)>=9)
+hib$year=factor(year(hib$date)+oldyear)
+#following corrected 30/1/19
+hib$dayno=as.numeric(hib$date)-
+  as.numeric(as.Date(ISOdate(year(hib$date)-1+oldyear,9,1)))
 table(hib$year,hib$month)
 hib$observer=hibyear$ObserverID
 
@@ -108,34 +157,59 @@ hib$observer=hibyear$ObserverID
 ###########################################################################
 tsql='select * from dbo_Species order by ID'
 spdf <- sqlQuery( channel , tsql)
-spdf
 
+############################################################################
+# Now species details
+###########################################################################
 tsql='select * from dbo_HibernationCountSpecies order by ID'
 hcdf <- sqlQuery( channel , tsql)
+cat(paste0("\n",nrow(hcdf)," rows of data imported from dbo_HibernationCountSpecies"))
+# check that most records can be matched
 summary(hcdf$HibernationCountID %in% hibyear$ID)
+# many records lack a match in dbo_HibernationCountSpecies but these are where no
+# bats were found, and do not indicate an error.
+summary(hibyear$ID %in% hcdf$HibernationCountID)
+
 hcdf=hcdf[hcdf$HibernationCountID %in% hibyear$ID,]
 data.frame(table(hcdf$SpeciesID))
+# Deal with species groups with several codes
 # recode all whiskered/brandts to 4
 hcdf$SpeciesID[hcdf$SpeciesID %in% c(6,8)]=4
 # and all pips to 12
 hcdf$SpeciesID[hcdf$SpeciesID %in% c(13,14,32)]=12
+# Next two lines give names and numbers of species with sufficient data
 goodspp=c("whiskbrandt","daub","natt","blongear","gthorse","lshorse","barb","allpip")
 goodsplev=c(4,7,9,15,16,17,2,12)
 #get rid of other species
 hcdf$HibernationCountID=factor(hcdf$HibernationCountID,levels=hibyear$ID)
+#find total bats in each survey
 totbats=tapply(hcdf$TotalCount,hcdf$HibernationCountID,sum)
+totbats=as.numeric(totbats)  #ensure correct type
+#12/12/17 add code so can make total missing if NA count
+totna=as.logical(tapply(is.na(hcdf$TotalCount),hcdf$HibernationCountID,
+                 sum,na.rm=TRUE))
+
 hcdf=hcdf[hcdf$SpeciesID %in% goodsplev,]
 data.frame(table(hcdf$SpeciesID))
 hcdf$SpeciesID=factor(hcdf$SpeciesID,levels=goodsplev,labels=goodspp)
+# create sptot which is a matrix with one col for each species and same number
+# of rows as hib containing counts for each species in each survey
 sptot=tapply(hcdf$TotalCount,list(hcdf$HibernationCountID,hcdf$SpeciesID),sum)
+sptotna=as.logical(tapply(is.na(hcdf$TotalCount),
+                    list(hcdf$HibernationCountID,hcdf$SpeciesID),sum,na.rm=TRUE))
 # replace NAs with 0s, since if not listed not present
 sptot[is.na(sptot)]=0
 totbats[is.na(totbats)]=0
+#but put back in if there is actually a missing count shown
+sptot[sptotna]=NA
+totbats[totna]=NA
 
-# add to main dataframe
+# add sptot and totbats to main dataframe
 hib=cbind(hib,sptot,totbats)
 goodntot=c(goodspp,"totbats")
-print(data.frame(colSums(hib[,goodntot])))  #check col totals
+#check col totals, note that totbats includes all bats so is more than sum of 
+#individual species
+print(data.frame(colSums(hib[,goodntot])))  
 print(sum(hib[,goodspp]))  #should be slightly less than above
 
 ###########################################################################
@@ -145,9 +219,12 @@ print(sum(hib[,goodspp]))  #should be slightly less than above
 ###########################################################################
 geog=gr2xy(hibyear$GridReference)
 hib=cbind(hib,geog)
+hib$longitude=as.numeric(hib$longitude)
+hib$latitude=as.numeric(hib$latitude)
 
 ###########################################################################
-#type etc
+#type etc. For each factor take values from hibyear and factor levels/labels
+#from relevant database table
 ###########################################################################
 tsql3='select * from dbo_StructureType order by ID'
 tpo <- sqlQuery( channel , tsql3)
@@ -234,8 +311,8 @@ data.frame(nsurvey,Totbats)
 ###########################################################################
 # remove tom mcowat sites
 ###########################################################################
-mcowat=read.xlsx("c:/data/nbmp2016/hib/Sites excluded from analysis 2016.xlsx",
-                 sheetIndex=1)
+mcowat=read.xlsx("../composite/input/Sites excluded from analysis 2016.xlsx",
+                 sheet=1)
 hib=hib[!hib$site%in%mcowat[,1],]
 
 ###########################################################################
@@ -244,8 +321,8 @@ hib=hib[!hib$site%in%mcowat[,1],]
 # an all-species weight hib$allweight, which is used if species weights too
 # extreme.
 ###########################################################################
-ipo=read.xlsx("C:/databases/nbmp_new/areas for weighting.xlsx",sheetIndex=1,
-          startRow=6)
+ipo=read.xlsx("../composite/input/areas for weighting.xlsx",sheet=1,
+              rows = 7:12)
 #just take eng, wales and scotland
 ipo=ipo[ipo[[1]]%in%levels(hib$country),]
 totobs=as.numeric(table(hib$country))  #number surveys in each country
@@ -256,6 +333,12 @@ summary(hib$allweight)
 tapply(hib$allweight,hib$country,mean)
 
 #call file hib.RData to distinguish from hib.rda from genstat
-save(hib,file="hib.RData")
+save(hib,file="hib.RData",version=2)
 
+#descriptives to allow checking
+summary(hib[,c('date','dayno','totbats')])
+data.frame(colSums(hib[,goodspp],na.rm=TRUE))
+print(nrow(hib))
+
+sessionInfo()
 timestamp()
